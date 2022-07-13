@@ -1,1 +1,1 @@
-# go-authdelivery
+# authdelivery
