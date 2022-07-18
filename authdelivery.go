@@ -2,169 +2,94 @@ package authdelivery
 
 import (
 	"fmt"
-	"log"
 	"net/url"
 	"strings"
 
 	"github.com/buger/jsonparser"
 )
 
-func ParseBidRequestOld(bidRequestJSON []byte) error {
-	type SchainNode struct {
-		asi, sid, params, replace []byte
-
-		paramsDepth         int
-		replacementsSmeared map[string]string
-		replacementsToEmit  []string
-	}
-
-	schainNodes := make([]SchainNode, 0, 10)
-	protectedParamsIndex := make([]string, 0, 10)
-	_, err := jsonparser.ArrayEach(bidRequestJSON, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-		var asi, sid, params, replace []byte
-		jsonparser.EachKey(value, func(idx int, value []byte, vt jsonparser.ValueType, err error) {
-			if err != nil {
-				log.Printf("error parsing field: %v", err)
-			}
-			switch idx {
-			case 0:
-				asi = value
-			case 1:
-				sid = value
-			case 2:
-				params = value
-			case 3:
-				replace = value
-			}
-		}, []string{"asi"}, []string{"sid"}, []string{"params"}, []string{"replace"})
-		if len(params) > 0 {
-			paths := strings.Split(string(params), "&")
-			protectedParamsIndex = append(protectedParamsIndex, paths...)
-		}
-		schainNodes = append(schainNodes,
-			SchainNode{
-				asi:     asi,
-				sid:     sid,
-				params:  params,
-				replace: replace,
-
-				paramsDepth:         len(protectedParamsIndex),
-				replacementsSmeared: make(map[string]string, len(protectedParamsIndex)),
-			})
-	}, "source", "ext", "schain", "nodes")
-	if err != nil {
-		log.Printf("error parsing array: %v", err)
-		return err
-	}
-	// Process replacements
-	for i := len(schainNodes) - 1; i > 0; i-- {
-		// Copy over relevant replacements
-		for k, v := range schainNodes[i].replacementsSmeared {
-			for j := 0; j < schainNodes[i-1].paramsDepth; j++ {
-				if k == protectedParamsIndex[j] {
-					schainNodes[i-1].replacementsSmeared[k] = v
-				}
-			}
-		}
-		if len(schainNodes[i].replace) > 0 {
-			values, err := url.ParseQuery(string(schainNodes[i].replace))
-			if err != nil {
-				return err
-			}
-			for k, v := range values {
-				schainNodes[i].replacementsToEmit = append(schainNodes[i].replacementsToEmit, k)
-				if len(v) == 0 {
-					schainNodes[i-1].replacementsSmeared[k] = ""
-				} else {
-					schainNodes[i-1].replacementsSmeared[k] = v[0] // TODO: handle multiple values
-				}
-			}
-		}
-	}
-
-	fmt.Println("schain nodes:")
-
-	for i, v := range schainNodes {
-		fmt.Printf("\t%d: %s\n", i, v)
-	}
-
-	// protectedPaths := make(map[string]bool, 10)
-	// for _, v := range schainNodes {
-	// 	if len(v.params) > 0 {
-	// 		paths := strings.Split(string(v.params), "&")
-	// 		for _, path := range paths {
-	// 			protectedPaths[path] = true
-	// 		}
-	// 	}
-	// }
-	pathsToFetch := make([][]string, 0, len(protectedParamsIndex))
-	for _, path := range protectedParamsIndex {
-		elements := strings.Split(path, ".")
-		pathsToFetch = append(pathsToFetch, elements)
-	}
-
-	fmt.Printf("Fetching paths: %s\n", pathsToFetch)
-	fmt.Printf("Path Index: %s\n", protectedParamsIndex)
-
-	pathsValues := make([][]byte, len(protectedParamsIndex))
-	jsonparser.EachKey(bidRequestJSON, func(idx int, value []byte, vt jsonparser.ValueType, err error) {
-		pathsValues[idx] = value
-	}, pathsToFetch...)
-	fmt.Printf("Path values: %s\n", pathsValues)
-
-	type keyValuePair struct {
-		key   string
-		value string
-	}
-
-	for i, schainNode := range schainNodes {
-		fmt.Printf("\t%d: %s\n", i, schainNode)
-		pairs := []keyValuePair{}
-
-		// first output the signed schain node info
-		pairs = append(pairs, keyValuePair{key: fmt.Sprintf("schain.[%d].asi", i), value: string(schainNode.asi)})
-		pairs = append(pairs, keyValuePair{key: fmt.Sprintf("schain.[%d].sid", i), value: string(schainNode.sid)})
-
-		// next iterate over the requested protected fields
-		// If there is a smeared replacement, use it; otherwise use the value found in the final bid request
-		// for k := schainNode.replacementsToEmit {
-
-		// }
-
-		// Next iterate over the requested replacement fields.  If a smeared value exists, use it; otherwise use the latest info since this is the latest replacement
-		fragment := ""
-		for _, pair := range pairs {
-			fragment += "&" + pair.key + "=" + url.QueryEscape(pair.value)
-		}
-
-		fmt.Println("Fragment: " + fragment)
-	}
-
-	return nil
+type ParsedBidRequest struct {
+	SignatureMessageFragments []string
 }
 
-func ParseBidRequest(bidRequestJSON []byte) error {
-	type keyValuePair struct {
-		key   string
-		value string
+type schainNode struct {
+	asi, sid, params, replace []byte
+
+	parsedParams       keyOffsetPairList
+	parsedReplacements keyValuePairList
+}
+
+type schainNodeList []schainNode
+
+func (l schainNodeList) splitParamNamesForLookup() [][]string {
+	result := [][]string{}
+	for _, node := range l {
+		for _, param := range node.parsedParams {
+			result = append(result, strings.Split(param.key, "."))
+		}
 	}
+	return result
+}
 
-	type SchainNode struct {
-		asi, sid, params, replace []byte
-
-		parsedParamNames   []string
-		parsedReplacements []keyValuePair
+func (l schainNodeList) findReplacement(keyToFind string) (bool, string) {
+	for _, laterNode := range l {
+		for _, replacement := range laterNode.parsedReplacements {
+			if replacement.key == keyToFind {
+				return true, replacement.value
+			}
+		}
 	}
+	return false, ""
+}
 
-	schainNodes := make([]SchainNode, 0, 10)
+type keyValuePair struct {
+	key   string
+	value string
+}
+
+type keyValuePairList []keyValuePair
+
+type keyOffsetPair struct {
+	key    string
+	offset int
+}
+
+type keyOffsetPairList []keyOffsetPair
+
+func (l keyOffsetPairList) keysToSplitArrayForLookup() [][]string {
+	result := make([][]string, 0, len(l))
+	for _, item := range l {
+		result = append(result, strings.Split(item.key, "."))
+	}
+	return result
+}
+
+func (l keyOffsetPairList) findOffsetForKey(key string) int {
+	for _, pair := range l {
+		if pair.key == key {
+			return pair.offset
+		}
+	}
+	return -1
+}
+
+func ParseBidRequest(bidRequestJSON []byte) (ParsedBidRequest, error) {
+	result := ParsedBidRequest{}
+
+	var globalOffset int
+	globalPathIndex := keyOffsetPairList{}
+
+	var innerErr error
+	schainNodes := make(schainNodeList, 0, 10)
+	pathsToFetch := [][]string{}
 	_, err := jsonparser.ArrayEach(bidRequestJSON, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-		schainNode := SchainNode{
-			parsedParamNames:   make([]string, 0, 10),
-			parsedReplacements: make([]keyValuePair, 0, 10),			
+		schainNode := schainNode{
+			parsedParams: make(keyOffsetPairList, 0, 10),
 		}
 		jsonparser.EachKey(value, func(idx int, value []byte, vt jsonparser.ValueType, err error) {
 			if err != nil {
-				log.Printf("error parsing field: %v", err)
+				innerErr = err
+				return
 			}
 			switch idx {
 			case 0:
@@ -178,75 +103,50 @@ func ParseBidRequest(bidRequestJSON []byte) error {
 			}
 		}, []string{"asi"}, []string{"sid"}, []string{"params"}, []string{"replace"})
 		if len(schainNode.params) > 0 {
-			schainNode.parsedParamNames = strings.Split(string(schainNode.params), "&")
+			for _, path := range strings.Split(string(schainNode.params), "&") {
+				pair := keyOffsetPair{key: path, offset: globalOffset}
+				globalOffset++
+
+				schainNode.parsedParams = append(schainNode.parsedParams, pair)
+				globalPathIndex = append(globalPathIndex, pair)
+				pathsToFetch = append(pathsToFetch, strings.Split(path, "."))
+			}
 		}
 		if len(schainNode.replace) > 0 {
-
+			for _, replacement := range strings.Split(string(schainNode.replace), "&") {
+				replacementParsed, err := url.ParseQuery(replacement)
+				if err != nil {
+					innerErr = err
+					return
+				}
+				for k, v := range replacementParsed {
+					schainNode.parsedReplacements = append(schainNode.parsedReplacements, keyValuePair{key: k, value: v[0]})
+				}
+			}
 		}
 		schainNodes = append(schainNodes, schainNode)
 	}, "source", "ext", "schain", "nodes")
 	if err != nil {
-		log.Printf("error parsing array: %v", err)
-		return err
+		return result, err
 	}
-	// Process replacements
-	for i := len(schainNodes) - 1; i > 0; i-- {
-		// Copy over relevant replacements
-		for k, v := range schainNodes[i].replacementsSmeared {
-			for j := 0; j < schainNodes[i-1].paramsDepth; j++ {
-				if k == protectedParamsIndex[j] {
-					schainNodes[i-1].replacementsSmeared[k] = v
-				}
-			}
-		}
-		if len(schainNodes[i].replace) > 0 {
-			values, err := url.ParseQuery(string(schainNodes[i].replace))
-			if err != nil {
-				return err
-			}
-			for k, v := range values {
-				schainNodes[i].replacementsToEmit = append(schainNodes[i].replacementsToEmit, k)
-				if len(v) == 0 {
-					schainNodes[i-1].replacementsSmeared[k] = ""
-				} else {
-					schainNodes[i-1].replacementsSmeared[k] = v[0] // TODO: handle multiple values
-				}
-			}
-		}
+	if innerErr != nil {
+		return result, innerErr
 	}
 
-	fmt.Println("schain nodes:")
-
-	for i, v := range schainNodes {
-		fmt.Printf("\t%d: %s\n", i, v)
-	}
-
-	// protectedPaths := make(map[string]bool, 10)
-	// for _, v := range schainNodes {
-	// 	if len(v.params) > 0 {
-	// 		paths := strings.Split(string(v.params), "&")
-	// 		for _, path := range paths {
-	// 			protectedPaths[path] = true
-	// 		}
-	// 	}
-	// }
-	pathsToFetch := make([][]string, 0, len(protectedParamsIndex))
-	for _, path := range protectedParamsIndex {
-		elements := strings.Split(path, ".")
-		pathsToFetch = append(pathsToFetch, elements)
-	}
-
-	fmt.Printf("Fetching paths: %s\n", pathsToFetch)
-	fmt.Printf("Path Index: %s\n", protectedParamsIndex)
-
-	pathsValues := make([][]byte, len(protectedParamsIndex))
+	pathsValues := make([][]byte, len(pathsToFetch))
 	jsonparser.EachKey(bidRequestJSON, func(idx int, value []byte, vt jsonparser.ValueType, err error) {
+		if err != nil {
+			innerErr = err
+			return
+		}
 		pathsValues[idx] = value
 	}, pathsToFetch...)
-	fmt.Printf("Path values: %s\n", pathsValues)
+	if innerErr != nil {
+		return result, innerErr
+	}
 
+	pathIndex := 0
 	for i, schainNode := range schainNodes {
-		fmt.Printf("\t%d: %s\n", i, schainNode)
 		pairs := []keyValuePair{}
 
 		// first output the signed schain node info
@@ -254,19 +154,32 @@ func ParseBidRequest(bidRequestJSON []byte) error {
 		pairs = append(pairs, keyValuePair{key: fmt.Sprintf("schain.[%d].sid", i), value: string(schainNode.sid)})
 
 		// next iterate over the requested protected fields
-		// If there is a smeared replacement, use it; otherwise use the value found in the final bid request
-		// for k := schainNode.replacementsToEmit {
+		for _, protectedParam := range schainNode.parsedParams {
+			foundReplacement, valueToUse := schainNodes[i+1:].findReplacement(protectedParam.key)
+			if !foundReplacement {
+				valueToUse = string(pathsValues[pathIndex])
+			}
+			pairs = append(pairs, keyValuePair{key: protectedParam.key, value: valueToUse})
+			pathIndex++
+		}
 
-		// }
+		// Then iterate over replacements and put in the applicable value.
+		for _, replacement := range schainNode.parsedReplacements {
+			foundReplacement, valueToUse := schainNodes[i+1:].findReplacement(replacement.key)
+			if !foundReplacement {
+				valueToUse = string(pathsValues[globalPathIndex.findOffsetForKey(replacement.key)])
+			}
+			pairs = append(pairs, keyValuePair{key: replacement.key, value: valueToUse})
+		}
 
-		// Next iterate over the requested replacement fields.  If a smeared value exists, use it; otherwise use the latest info since this is the latest replacement
+		// Finally, generate the fragments.
 		fragment := ""
 		for _, pair := range pairs {
 			fragment += "&" + pair.key + "=" + url.QueryEscape(pair.value)
 		}
 
-		fmt.Println("Fragment: " + fragment)
+		result.SignatureMessageFragments = append(result.SignatureMessageFragments, fragment)
 	}
 
-	return nil
+	return result, nil
 }
