@@ -21,16 +21,6 @@ type schainNode struct {
 
 type schainNodeList []schainNode
 
-func (l schainNodeList) splitParamNamesForLookup() [][]string {
-	result := [][]string{}
-	for _, node := range l {
-		for _, param := range node.parsedParams {
-			result = append(result, strings.Split(param.key, "."))
-		}
-	}
-	return result
-}
-
 func (l schainNodeList) findReplacement(keyToFind string) (bool, string) {
 	for _, laterNode := range l {
 		for _, replacement := range laterNode.parsedReplacements {
@@ -55,14 +45,6 @@ type keyOffsetPair struct {
 }
 
 type keyOffsetPairList []keyOffsetPair
-
-func (l keyOffsetPairList) keysToSplitArrayForLookup() [][]string {
-	result := make([][]string, 0, len(l))
-	for _, item := range l {
-		result = append(result, strings.Split(item.key, "."))
-	}
-	return result
-}
 
 func (l keyOffsetPairList) findOffsetForKey(key string) int {
 	for _, pair := range l {
