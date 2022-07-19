@@ -368,3 +368,66 @@ func TestParseBidRequest(t *testing.T) {
 		})
 	}
 }
+
+var inputBidRequest = []byte(`
+{
+	"id": "BidRequest2",
+	"app": {
+		"bundle": "com.app.test",
+		"cat": [
+			"IAB22",
+			"IAB33",
+			"IAB44"
+		],
+		"domain": "com.app.test",
+		"id": "123456",
+		"name": "TestApp",
+		"publisher": {
+			"id": "12345"
+		},
+		"storeurl": "https://play.google.com/store/apps/details?id=com.app.test"
+	},
+	"source": {
+		"ext": {
+			"schain": {
+				"ver": "1.0",
+				"complete": 1,
+				"nodes": [
+					{
+						"asi": "directseller.com",
+						"sid": "111111",
+						"hp": 1,
+						"params": "app.bundle"
+					},
+					{
+						"asi": "reseller.com",
+						"sid": "222222",
+						"hp": 1
+					},
+					{
+						"asi": "exchange-1.com",
+						"sid": "333333",
+						"hp": 1,
+						"params": "app.name",
+						"replace": "app.bundle=com.app.original"
+					},
+					{
+						"asi": "exchange-2.com",
+						"sid": "444444",
+						"hp": 1,
+						"replace": "app.bundle=com.app.former"
+					}
+				]
+			}
+		}
+	}
+}`)
+
+func BenchmarkParseBidRequest(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_, err := authdelivery.ParseBidRequest(inputBidRequest)
+		if err != nil {
+			b.Fatalf("Unexpected error %v", err)
+		}
+	}
+}
